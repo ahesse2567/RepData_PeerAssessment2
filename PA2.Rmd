@@ -1,0 +1,55 @@
+---
+title: "Reproducible Research Assigment 2: Severe Weather"
+author: "Anton Hesse"
+date: "7/15/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE)
+```
+
+## Write Summary Here
+    
+    
+
+## Importing and cleaning data
+
+We will start by loading the necessary libraries. We determined that fread was the fastest method to import such a large dataset from a separate R script.
+
+``` {r load_libraries}
+library(tidyverse)
+library(data.table)
+```
+
+``` {r import_cleaning, cache = TRUE}
+weather <- fread("repdata_data_StormData.csv.bz2", header = TRUE,
+                  na.strings = c("", " ", NA))
+```
+
+This data set is massive with respect to the number of observations. There are also several variables we can remove becaus they won't be necessary for our analysis. Let's fist check what percentage of values are missing in each column.
+
+```{r missing_values}
+round(colSums(is.na(weather))/nrow(weather)*100,1)
+```
+
+* STATEOFFIC. This should only matter for reporting, but not likely for damage, injuries, or fatalities. 27.6% of these were also missing.
+* REFNUM. This is the same as the row number.
+* TIMEZONE. Time zones are often drawn for political or geographical reasons, not because of how they correspond to the sun. Latitude and longitude are likely better.
+* BGN_AZI and END_AZI. This is the angle in degrees from north at the beginning and end of the weather event. A storm can cause damage in whatever direction it travels, so we will exclude it. Also, 27% of beginning azumithal angles were NA's.
+* ZONENAMES. A large share of these are missing (65.8%). This is likely about location information and latitude and longitude take care of that information.
+* BGN_LOCATI. 31.9% are missing and latitude and logintude take care of this information.
+* COUNTYENDN. 100% are missing.
+* LATITUDE_E and LONGITUDE_. Many of these are coded to 0, but when they do have a value they are remarkably similar to LATITUDE and LONGITUDE. Therefore, we will remove these as well
+
+In addition to removing unnecessary columns, we will format the BGN_DATE to remove all the 0:00:00's.
+
+``` {r remove_columns}
+weather <- weather %>% 
+    select(-c(TIME_ZONE, STATEOFFIC, REFNUM, BGN_AZI, END_AZI, ZONENAMES,
+              COUNTYENDN, LATITUDE_E, LONGITUDE_)) %>% 
+    mutate(BGN_DATE = as.Date(mdy_hms(weather$BGN_DATE), format = "%m/%d/%Y")) %>% 
+    glimpse()
+```
+
+There are quite a few 0's in the latitude_e and longitude_. These should likely be NA.
