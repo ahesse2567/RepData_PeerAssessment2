@@ -1,5 +1,5 @@
 ---
-title: "Reproducible Research Assigment 2: Severe Weather"
+title: "Reproducible Research Assigment 2: Severe stormData"
 author: "Anton Hesse"
 date: "7/15/2020"
 output: html_document
@@ -20,23 +20,26 @@ We will start by loading the necessary libraries. We determined that fread was t
 ``` {r load_libraries}
 library(tidyverse)
 library(data.table)
+library(lubridate)
+library(stringdist)
+library(gridExtra)
 ```
 
 ``` {r import_cleaning, cache = TRUE}
-weather <- fread("repdata_data_StormData.csv.bz2", header = TRUE,
+stormData <- fread("repdata_data_StormData.csv.bz2", header = TRUE,
                   na.strings = c("", " ", NA))
 ```
 
 This data set is massive with respect to the number of observations. There are also several variables we can remove becaus they won't be necessary for our analysis. Let's fist check what percentage of values are missing in each column.
 
 ```{r missing_values}
-round(colSums(is.na(weather))/nrow(weather)*100,1)
+round(colSums(is.na(stormData))/nrow(stormData)*100,1)
 ```
 
 * STATEOFFIC. This should only matter for reporting, but not likely for damage, injuries, or fatalities. 27.6% of these were also missing.
 * REFNUM. This is the same as the row number.
 * TIMEZONE. Time zones are often drawn for political or geographical reasons, not because of how they correspond to the sun. Latitude and longitude are likely better.
-* BGN_AZI and END_AZI. This is the angle in degrees from north at the beginning and end of the weather event. A storm can cause damage in whatever direction it travels, so we will exclude it. Also, 27% of beginning azumithal angles were NA's.
+* BGN_AZI and END_AZI. This is the angle in degrees from north at the beginning and end of the stormData event. A storm can cause damage in whatever direction it travels, so we will exclude it. Also, 27% of beginning azumithal angles were NA's.
 * ZONENAMES. A large share of these are missing (65.8%). This is likely about location information and latitude and longitude take care of that information.
 * BGN_LOCATI. 31.9% are missing and latitude and logintude take care of this information.
 * COUNTYENDN. 100% are missing.
@@ -45,11 +48,167 @@ round(colSums(is.na(weather))/nrow(weather)*100,1)
 In addition to removing unnecessary columns, we will format the BGN_DATE to remove all the 0:00:00's.
 
 ``` {r remove_columns}
-weather <- weather %>% 
+stormData <- stormData %>% 
     select(-c(TIME_ZONE, STATEOFFIC, REFNUM, BGN_AZI, END_AZI, ZONENAMES,
               COUNTYENDN, LATITUDE_E, LONGITUDE_)) %>% 
-    mutate(BGN_DATE = as.Date(mdy_hms(weather$BGN_DATE), format = "%m/%d/%Y")) %>% 
+    mutate(BGN_DATE = as.Date(mdy_hms(stormData$BGN_DATE), format = "%m/%d/%Y")) %>% 
     glimpse()
 ```
 
-There are quite a few 0's in the latitude_e and longitude_. These should likely be NA.
+To make typing easier for later, we'll change all column names to lowercase
+
+``` {r col_names_lowercase}
+colnames(stormData) <- tolower(colnames(stormData))
+```
+
+We have made a good reduction in the number of columns. However, we need to check and see how many different event type categories there are. The [National Weather Service (NWS) Directive 10-1605](https://www.ncdc.noaa.gov/stormevents/pd01016005curr.pdf) indicates that there are onlyo 48 different event types.
+
+``` {r unique_event_types}
+unique(stormData$evtype) %>% 
+    length()
+```
+
+985 different event types is much larger than 48. We should see how many there are after changing everything to lowercase because the unique() function is case senstive.
+
+``` {r lowercase_event_types_test}
+tolower(stormData$evtype) %>% 
+    unique() %>% 
+    length
+```
+
+898 is much lower, but there's still quite a bit of cleaning to do. Let's at least turn all event types to lower case.
+
+``` {r lowercase_event_types}
+stormData$evtype <- tolower(stormData$evtype)
+```
+
+According to the [NOAA](https://www.ncdc.noaa.gov/stormevents/details.jsp?type=eventtype), they started using this list of 48 event types in 1996. Prior to that they recorded only certain events such as tornados, thunderstorms, and hail events. Therefore, we will remove all events prior to 1996 because otherwise tornados, thunderstorms, and hail events would be overrepresented.
+
+``` {r 1996_and_beyond}
+stormData <- subset(stormData, stormData$bgn_date >= as.Date("1996-01-01"))
+
+stormData$evtype %>% 
+    unique() %>% 
+    length()
+```
+
+That resulted in a dramatic drop in the number of event types, but there's still lots of cleaning left to do. We will now clean up small typos such as plular word forms and extra whitespaces. We will start that by creating a reference list of the 48 official event types. According to the NWS directive, "Debris Flow" is the updated term for "Landslide". However, we will use landslide for the first stage of analysis to make corrections for typos with the older term.
+
+```{r official_event_types}
+eventTypes <- c("Astronomical Low Tide", "Avalanche", "Blizzard", "Coastal Flood", "Cold/Wind Chill", "Landslide", "Dense Fog", "Dense Smoke", "Drought", "Dust Devil", "Dust Storm", "Excessive Heat", "Extreme Cold/Wind Chill", "Flash Flood", "Flood", "Frost/Freeze", "Funnel Cloud", "Freezing Fog", "Hail", "Heat", "Heavy Rain", "Heavy Snow", "High Surf", "High Wind", "Hurricane (Typhoon)", "Ice Storm", "Lake-Effect Snow", "Lakeshore Flood", "Lightning", "Marine Hail", "Marine High Wind", "Marine Strong Wind", "Marine Thunderstorm Wind", "Rip Current", "Seiche", "Sleet", "Storm Surge/Tide", "Strong Wind", "Thunderstorm Wind", "Tornado", "Tropical Depression", "Tropical Storm", "Tsunami", "Volcanic Ash", "Waterspout", "Wildfire", "Winter Storm", "Winter Weather")
+
+eventTypes <- tolower(eventTypes)
+```
+One troubleshooting tactic we'll need to use when we correct spelling is to confirm we didn't accidentally convert one term into another. We will check with the following function.
+
+``` {r allEventsPresent_function}
+allEventsPresent <- function(x, table) {
+    for(i in 1:length(table)) {
+        if(i == 1) {
+            hits <- numeric()
+        }
+        if(any(table[i] == x[['evtype']])) {
+            hits <- c(hits, table[i])
+        } else {
+            hits <- c(hits, FALSE)
+        }
+    }
+    noEvents <- which(hits == FALSE) # there are some events without a match
+    if(length(table[noEvents] > 0)) {
+        table[noEvents]
+    } else {
+        print("No event types missing from list of 48 official events")
+    }
+}
+
+allEventsPresent(stormData, eventTypes)
+```
+Surprisingly, there aren't any events listed as "hurricane (typhoon)". We suspect most were instead entered as "hurricane", or as "typhoon".
+
+``` {r hurricane_typhoon}
+length(which(stormData$evtype == "hurricane"))
+length(which(stormData$evtype == "typhoon"))
+```
+Indeed, most were classified as one term or the other. We will make those corrections with the amatch() function.
+
+```{r typhoon_correction}
+typhoon <- amatch(stormData$evtype, "typhoon", maxDist = 3)
+typhoonIdx <- which(!is.na(typhoon))
+stormData$evtype[typhoonIdx] # it looks like there weren't any spelling mistakes about typhoon, so let's change all those to hurricane 
+unique(stormData$evtype[typhoonIdx])
+stormData$evtype[typhoonIdx] <- "hurricane (typhoon)"
+stormData$evtype[typhoonIdx]
+```
+
+We will perform something similar with "hurricane (typhoon)" as well.
+
+```{r}
+hurricaneTyphoon <- amatch(stormData$evtype, "hurricane (typhoon)", maxDist = 3)
+hurricaneTyphoonIdx <- which(!is.na(hurricaneTyphoon))
+stormData$evtype[hurricaneTyphoonIdx] # it looks like there weren't any spelling mistakes about typhoon, so let's change all those to hurricane 
+unique(stormData$evtype[hurricaneTyphoonIdx])
+stormData$evtype[hurricaneTyphoonIdx] <- "hurricane (typhoon)"
+stormData$evtype[hurricaneTyphoonIdx]
+unique(stormData$evtype[hurricaneTyphoonIdx])
+
+a <- amatch(stormData$evtype, "hurricane (typhoon)", maxDist = 5)
+aIdx <- which(!is.na(a))
+stormData$evtype[aIdx]
+unique(stormData$evtype[aIdx])
+```
+
+For the purpose of further typo corrections, we will temporarily change the refernce term "hurricane (typhoon)" to just "hurricane" because there could be misspellings of "hurricane" that wouldn't get fixed with amatch().
+
+``` {r}
+which(eventTypes == "hurricane (typhoon)")
+eventTypes[25] <- "hurricane"
+
+allEventsPresent(stormData, eventTypes)
+```
+
+Now that we know we have matches for all 48 event types, let's get a clearer idea of exactly how many events are left that don't match those 48 event types.
+
+``` {r remainingCorrections_func}
+remainingCorrections <- function(x, table) {
+    matches <- amatch(x, table, maxDist = 0.1)
+    imperfectMatch <- which(is.na(matches))
+    perfectMatch <- which(!is.na(matches))
+    print(paste("Imperfect matches:", length(imperfectMatch)))
+    print(paste("Perfect matches:", length(perfectMatch)))
+    print(paste("Percent remaining that need correction:",
+                round(length(imperfectMatch)/length(perfectMatch)*100,1)))
+}
+
+remainingCorrections(stormData$evtype, eventTypes)
+```
+
+That's still quite a few to correct. Now let's correct the typos. We will create a copy of the stormData file and use it to compare changes.
+
+``` {r termCorrection_func}
+termCorrection <- function(x, table) {
+    pb <- txtProgressBar(min = 1, max = length(table), style = 3)
+    uniqueEvents <- length(unique(x[['evtype']]))
+    print(paste("Unique events before corrections:", uniqueEvents))
+    for(i in 1:length(table)) {
+        type <- table[i]
+        maxDist <- 1
+        matches <- amatch(x[['evtype']], type, maxDist = maxDist)
+        matchIdx <- which(!is.na(matches))
+        x[['evtype']][matchIdx] <- type
+        setTxtProgressBar(pb, i)
+    }
+    close(pb)
+    uniqueEvents <- length(unique(x[['evtype']]))
+    print(paste("Unique events after corrections:", uniqueEvents))
+    x
+}
+
+copy <- termCorrection(stormData, eventTypes)
+```
+Unfortunately that was a smaller number of corrections than we were hoping for, but it's a start. Let's double check that we didn't erase any terms by mistake and see what terms were fixed.
+
+``` {r confirm_corrections_plus_differences}
+allEventsPresent(copy, eventTypes)
+unique(stormData$evtype[!(stormData$evtype %in% copy$evtype)])
+```
+As expected, there were issues with extra spaces, plural forms, and other small typos.

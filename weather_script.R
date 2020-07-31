@@ -2,6 +2,7 @@ library(tidyverse)
 library(data.table)
 library(lubridate)
 library(stringdist)
+library(gridExtra)
 
 stormData <- fread("repdata_data_StormData.csv.bz2", header = TRUE,
                   na.strings = c("", " ", NA))
@@ -30,7 +31,7 @@ unique(stormData$evtype) %>%
 stormData$evtype %>% 
     unique() # 985
 
-toupper(stormData$evtype) %>% 
+tolower(stormData$evtype) %>% 
     unique() %>% 
     length # 898. Clearly some were coded as upper and some as lower case
 
@@ -89,7 +90,7 @@ stormData$evtype[typhoonIdx]
 
 # I could also see there being an issue with "hurricane (typhoon)" because the name is so long. 
 
-hurricaneTyphoon <- amatch(stormData$evtype, "hurricane (typhoon", maxDist = 3)
+hurricaneTyphoon <- amatch(stormData$evtype, "hurricane (typhoon)", maxDist = 3)
 hurricaneTyphoonIdx <- which(!is.na(hurricaneTyphoon))
 stormData$evtype[hurricaneTyphoonIdx] # it looks like there weren't any spelling mistakes about typhoon, so let's change all those to hurricane 
 unique(stormData$evtype[hurricaneTyphoonIdx])
@@ -252,6 +253,53 @@ stormCropDmg <- stormData[which(stormData$cropdmg > 0),]
 stormFatal <- stormData[which(stormData$fatalities > 0),]
 stormInj <- stormData[which(stormData$injuries > 0),]
 
+stormFatalInj <- rbind(rbind(stormFatal, stormInj))
+
+
+fatalInjSummary <- stormFatalInj %>% 
+    group_by(evtype) %>% 
+    summarize(mean = mean(fatalities + injuries),
+              median = median(fatalities + injuries),
+              sd = sd(fatalities + injuries),
+              n = n(),
+              total = sum(fatalities + injuries),
+              se = sd(fatalities + injuries)/sqrt(n()),
+              min = min(fatalities + injuries),
+              max = max(fatalities + injuries))
+fatalInjSummary
+
+# set values with NA for sd and se to 0
+fatalInjSummary$sd[which(is.na(fatalInjSummary$sd))] <- 0
+fatalInjSummary$se[which(is.na(fatalInjSummary$se))] <- 0
+
+fatalInjMeanGraph <- fatalInjSummary %>% 
+    top_n(15, mean) %>% 
+    ggplot() +
+    geom_col(aes(x = reorder(evtype, -mean), y = mean, fill = evtype)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    theme(legend.position = "none") +
+    xlab("Event Type") +
+    ylab("Mean Fatalities and Injuries") +
+    ggtitle("Mean Fatalities and Injuries by Event Type Since 1996") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    geom_errorbar(aes(x = evtype, ymin = mean - se,
+                      ymax = mean + se))
+fatalInjMeanGraph
+
+fatalInjTotalGraph <- fatalInjSummary %>% 
+    top_n(15, total) %>% 
+    ggplot() +
+    geom_col(aes(x = reorder(evtype, -total), y = total, fill = evtype)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    theme(legend.position = "none") +
+    xlab("Event Type") +
+    ylab("Cumultive Fatalities and Injuries") +
+    ggtitle("Cumulative Fatalities and Injuries by Event Type Since 1996") +
+    theme(plot.title = element_text(hjust = 0.5))
+fatalInjTotalGraph
+
+grid.arrange(fatalInjTotalGraph, fatalInjMeanGraph, nrow = 1)
+
 # we need to summarize the data by event type before plotting         
 fatalitySummary <-  stormFatal %>% 
     group_by(evtype) %>% 
@@ -342,6 +390,8 @@ injuryTotalGraph <- injurySummary %>%
 injuryTotalGraph
 
 
+
+
 #############################################################################
 
 stormPropDmg <- stormPropDmg %>% 
@@ -367,17 +417,31 @@ propDmgSummary$sd[which(is.na(propDmgSummary$sd))] <- 0
 propDmgSummary$se[which(is.na(propDmgSummary$se))] <- 0
 
 
-propDmgGraph <- propDmgSummary %>% 
-    top_n(10, total) %>% 
+propDmgTotalGraph <- propDmgSummary %>% 
+    top_n(15, total) %>% 
     ggplot() +
     geom_col(aes(x = reorder(evtype, -total), y = total, fill = evtype)) +
     theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
     theme(legend.position = "none") +
     xlab("Event Type") +
     ylab("Cumulative Property Damage in $") +
-    ggtitle("Cumulative Propert Damage Value by Event Type since 1996") +
+    ggtitle("Cumulative Property Damage Value by Event Type Since 1996") +
     theme(plot.title = element_text(hjust = 0.5))
-propDmgGraph
+propDmgTotalGraph
+
+propDmgMeanGraph <- propDmgSummary %>% 
+    top_n(15, mean) %>% 
+    ggplot() +
+    geom_col(aes(x = reorder(evtype, -mean), y = mean, fill = evtype)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    theme(legend.position = "none") +
+    xlab("Event Type") +
+    ylab("Mean Property Damage in $") +
+    ggtitle("Mean Property Damage Value by Event Type Since 1996") +
+    theme(plot.title = element_text(hjust = 0.5))
+propDmgMeanGraph
+
+grid.arrange(propDmgTotalGraph, propDmgMeanGraph, nrow = 1)
 
 #############################################################################
 
@@ -410,7 +474,7 @@ cropDmgTotalGraph <- cropDmgSummary %>%
     theme(legend.position = "none") +
     xlab("Event Type") +
     ylab("Cumulative Crop Damage in $") +
-    ggtitle("Cumulative Crop Damage Value by Event Type since 1996") +
+    ggtitle("Cumulative Crop Damage Value by Event Type Since 1996") +
     theme(plot.title = element_text(hjust = 0.5))
 cropDmgTotalGraph
 
@@ -423,12 +487,10 @@ cropDmgMeanGraph <- cropDmgSummary %>%
     theme(legend.position = "none") +
     xlab("Event Type") +
     ylab("Mean Crop Damage in $") +
-    ggtitle("Mean Crop Damage Value by Event Type since 1996") +
+    ggtitle("Mean Crop Damage Value by Event Type Since 1996") +
     theme(plot.title = element_text(hjust = 0.5)) +
     geom_errorbar(aes(x = evtype, ymin = mean - se,
                       ymax = mean + se))
 cropDmgMeanGraph
 
-which(stormCropDmg$evtype == "excessive heat")
-
-
+grid.arrange(cropDmgTotalGraph, cropDmgMeanGraph, nrow = 1)
